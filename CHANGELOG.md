@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [2.3.9.post1] - 2026-11-18
+
 ### Changed
 
 - Semantic search scans a store's vectors as one numpy matrix instead of
