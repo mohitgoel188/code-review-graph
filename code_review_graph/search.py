@@ -11,7 +11,7 @@ import logging
 import re
 import sqlite3
 from collections.abc import Sequence
-from typing import Any, NamedTuple, Optional
+from typing import TYPE_CHECKING, Any, NamedTuple, Optional
 
 from .graph import GraphStore, _sanitize_name, identifier_words
 from .migrations import (
@@ -23,6 +23,9 @@ from .migrations import (
     ensure_nodes_fts_state,
 )
 from .parser import normalize_file_path
+
+if TYPE_CHECKING:
+    from .embeddings import QueryEmbedding
 
 logger = logging.getLogger(__name__)
 
@@ -775,6 +778,7 @@ def _embedding_search(
     limit: int = 50,
     model: str | None = None,
     provider: str | None = None,
+    query_embedding: QueryEmbedding | None = None,
 ) -> list[tuple[int, float]]:
     """Run a vector similarity search using the embedding store.
 
@@ -792,7 +796,9 @@ def _embedding_search(
             if not emb_store.available or emb_store.count() == 0:
                 return []
 
-            results = emb_store.search(query, limit=limit)
+            results = emb_store.search(
+                query, limit=limit, query_embedding=query_embedding,
+            )
             # Map qualified names back to node IDs
             id_scores: list[tuple[int, float]] = []
             for qn, score in results:
@@ -874,6 +880,7 @@ def hybrid_search(
     model: Optional[str] = None,
     provider: Optional[str] = None,
     _out_mode: Optional[list[str]] = None,
+    query_embedding: Optional[QueryEmbedding] = None,
 ) -> list[dict[str, Any]]:
     """Hybrid search combining FTS5 BM25 and vector embeddings via RRF.
 
@@ -892,6 +899,8 @@ def hybrid_search(
             ``"hybrid"`` (FTS + embeddings), ``"fts"`` (FTS only),
             ``"semantic"`` (embeddings only), ``"keyword"`` (LIKE fallback),
             or ``"none"`` (empty query, or all search paths returned 0 results).
+        query_embedding: Optional holder of the query's vector, shared by a
+            caller that searches several stores so the query is embedded once.
 
     Returns:
         List of dicts with node metadata and ``score`` field.
@@ -918,8 +927,11 @@ def hybrid_search(
         logger.warning("FTS5 unavailable, will use fallback: %s", e)
 
     # Try embedding search
+    # The holder is passed only when there is one, so a replacement for
+    # ``_embedding_search`` written against its earlier signature still works.
+    shared = {} if query_embedding is None else {"query_embedding": query_embedding}
     emb_results = _embedding_search(
-        store, query, limit=fetch_limit, model=model, provider=provider,
+        store, query, limit=fetch_limit, model=model, provider=provider, **shared,
     )
 
     # ------ Phase 2: Merge via RRF or fallback ------

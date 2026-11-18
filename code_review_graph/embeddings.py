@@ -26,6 +26,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from . import __version__ as _crg_version
+from . import vector_index
 from .graph import GraphNode, GraphStore, node_to_dict
 
 logger = logging.getLogger(__name__)
@@ -1154,6 +1155,31 @@ def _node_to_text(node: GraphNode) -> str:
     return " ".join(parts)
 
 
+class QueryEmbedding:
+    """One query's vector per provider, embedded at most once.
+
+    A search over many stores would otherwise run the model on the same
+    text once per store. Vectors are kept by provider name because that name
+    is what ties a query vector to the stored vectors it may be compared with.
+    A failed embedding is not remembered, so the next store tries again as it
+    did before.
+    """
+
+    def __init__(self, query: str) -> None:
+        self.query = query
+        self._lock = threading.Lock()
+        self._vectors: dict[str, list[float]] = {}
+
+    def vector_for(self, provider: EmbeddingProvider) -> list[float]:
+        name = provider.name
+        with self._lock:
+            cached = self._vectors.get(name)
+            if cached is None:
+                cached = provider.embed_query(self.query)
+                self._vectors[name] = cached
+        return cached
+
+
 class EmbeddingStore:
     """Manages vector embeddings for graph nodes in SQLite."""
 
@@ -1244,14 +1270,43 @@ class EmbeddingStore:
 
         return embedded
 
-    def search(self, query: str, limit: int = 20) -> list[tuple[str, float]]:
-        """Search for nodes by semantic similarity."""
+    def search(
+        self,
+        query: str,
+        limit: int = 20,
+        query_embedding: QueryEmbedding | None = None,
+    ) -> list[tuple[str, float]]:
+        """Search for nodes by semantic similarity.
+
+        ``query_embedding`` lets a caller that searches several stores embed
+        the query once; it is ignored unless it was made for ``query``.
+
+        With numpy installed the scan runs over a cached matrix of the
+        store's vectors (see ``vector_index``); the ranking is the same as
+        the pure-Python scan, which remains the fallback.
+        """
         if not self.provider:
             return []
 
         provider_name = self.provider.name
-        query_vec = self.provider.embed_query(query)
+        if query_embedding is not None and query_embedding.query == query:
+            query_vec = query_embedding.vector_for(self.provider)
+        else:
+            query_vec = self.provider.embed_query(query)
 
+        matrix = vector_index.load_matrix(self._conn, self.db_path, provider_name)
+        if matrix is not None:
+            matches = vector_index.top_matches(
+                matrix, query_vec, limit, _cosine_similarity,
+            )
+            if matches is not None:
+                return matches
+        return self._search_python(query_vec, provider_name, limit)
+
+    def _search_python(
+        self, query_vec: list[float], provider_name: str, limit: int,
+    ) -> list[tuple[str, float]]:
+        """Score every stored vector in pure Python; the reference ranking."""
         # Process in chunks, only matching current provider
         scored: list[tuple[str, float]] = []
         cursor = self._conn.execute(

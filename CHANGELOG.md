@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Semantic search scans a store's vectors as one numpy matrix instead of
+  decoding and scoring each one in Python, and `cross_repo_search_tool` embeds
+  the query once instead of once per repository. The ranking is unchanged:
+  near-ties are settled by the pure-Python cosine, which also remains the
+  whole scan when numpy is not installed or `CRG_NUMPY_SEARCH=0` is set. On a
+  registry of 99 repositories and 136,713 vectors of 768 dimensions a warm
+  unscoped search went from 8.2 s to 0.15 s. The matrices are float32 and
+  cached in the serving process (420 MB for that registry), bounded by
+  `CRG_VECTOR_CACHE_MB` (default 1024, least recently used first out; 0 keeps
+  nothing) and reloaded when the database changes.
+
 ## [2.3.9] - 2026-09-18
 
 ### Added

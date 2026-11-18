@@ -6,6 +6,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from ..embeddings import QueryEmbedding
 from ..graph import GraphStore, _sanitize_name
 from ..incremental import get_db_path
 from ..search import hybrid_search
@@ -221,6 +222,8 @@ def cross_repo_search_func(
 
         ranked_results: list[tuple[int, int, dict[str, Any]]] = []
         searched_repos: list[str] = []
+        # Every repo is asked the same question: embed it once, not per repo.
+        query_embedding = QueryEmbedding(query)
 
         for repo_index, repo_entry in enumerate(selected):
             repo_path = Path(repo_entry["path"])
@@ -232,7 +235,8 @@ def cross_repo_search_func(
                 store = GraphStore(str(db_path))
                 try:
                     results = hybrid_search(
-                        store, query, kind=kind, limit=limit
+                        store, query, kind=kind, limit=limit,
+                        query_embedding=query_embedding,
                     )
                     alias = repo_entry.get("alias", repo_path.name)
                     for local_rank, r in enumerate(results):
